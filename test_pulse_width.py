@@ -15,18 +15,18 @@ if hdwf.value == 0:
     quit()
 
 #パルス設定
-period = 2e-6
-pulse_width = 1e-6
+pulse_width = 5e-7
+period = pulse_width * 5
 frequency = 1 / period
 duty = (pulse_width / period) * 100
 amplitude = 0.5
-repeat = 1
+repeat = 0
 
 dwf.FDwfAnalogOutReset(hdwf, 0)
 dwf.FDwfAnalogOutEnableSet(hdwf, 0, 1)
 dwf.FDwfAnalogOutFunctionSet(hdwf, 0, DwfAnalogOutFunctionPulse)
 dwf.FDwfAnalogOutFrequencySet(hdwf, 0, c_double(frequency))
-dwf.FDwfAnalogOutAmplitudeSet(hdwf, 0, c_double(0.5))
+dwf.FDwfAnalogOutAmplitudeSet(hdwf, 0, c_double(amplitude))
 dwf.FDwfAnalogOutOffsetSet(hdwf, 0, c_double(0))
 dwf.FDwfAnalogOutSymmetrySet(hdwf, 0, c_double(duty))
 dwf.FDwfAnalogOutIdleSet(hdwf, 0, "DwfAnalogOutIdleOffset")
@@ -37,14 +37,15 @@ dwf.FDwfAnalogOutRunSet(hdwf, 0, c_double(period))
 #dwf.FDwfAnalogOutWaitSet(hdwf, 0, c_double(0))
 
 #オシロスコープ
-hzAcq = c_double(100e5)  # 100MS/s
-nSamples = 200
+hzAcq = c_double(100e6)  # 100MS/s
+nSamples = 1000
 
 dwf.FDwfAnalogInReset(hdwf)
 
 dwf.FDwfAnalogInFrequencySet(hdwf, hzAcq)
 dwf.FDwfAnalogInBufferSizeSet(hdwf, c_int(nSamples))
 dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(0), c_bool(True))  # CH1
+dwf.FDwfAnalogInChannelRangeSet(hdwf, 0, c_double(0.2))
 
 # トリガ設定
 dwf.FDwfAnalogOutTriggerSourceSet(hdwf, 0, DwfTriggerSourceNone)
@@ -53,7 +54,6 @@ dwf.FDwfAnalogInTriggerSourceSet(hdwf, DwfTriggerSourceAnalogOut)
 # 開始
 dwf.FDwfAnalogInConfigure(hdwf, c_bool(False), c_bool(True))
 dwf.FDwfAnalogOutConfigure(hdwf, 0, 1)
-
 
 # 測定完了まで待機
 sts = c_byte()
@@ -76,7 +76,10 @@ plt.xlabel("Time [μs]")
 plt.ylabel("Voltage [V]")
 plt.title("Pulse Output + Oscilloscope Capture")
 plt.grid()
-plt.savefig("test.png")
+plt.savefig(f"{pulse_width}s.png")
 
 # 終了処理
 dwf.FDwfDeviceCloseAll()
+
+data = np.column_stack((t,v))
+np.savetxt(f"{pulse_width}_data.csv", data, delimiter=",", header="Time[s],Voltage[V]",comments="")
