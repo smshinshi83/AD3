@@ -3,80 +3,136 @@ from dwfconstants import *
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+import sys
 
-#SDK読み込み
-dwf = cdll.LoadLibrary("dwf")
+def open_device():
+    if sys.platform.startswith("win"):
+        dwf = cdll.dwf
+    elif sys.platform.startswith("linux"):
+        dwf = cdll.LoadLibrary("libdwf.so")
 
-#デバイスオープン
-hdwf = c_int()
-dwf.FDwfDeviceOpen(c_int(-1), byref(hdwf))
-if hdwf.value == 0:
-    print("デバイスが見つかりません")
-    quit()
+    hdwf = c_int()
 
-#パルス設定
-period = 2e-6
-pulse_width = 1e-6
-frequency = 1 / period
-duty = (pulse_width / period) * 100
-amplitude = 0.5
-repeat = 1
+    dwf.FDwfParamSet(DwfParamOnClose, c_int(0))
+    #Open the first device
+    dwf.FDwfDeviceOpen(c_int(-1), byref(hdwf))
 
-dwf.FDwfAnalogOutReset(hdwf, 0)
-dwf.FDwfAnalogOutEnableSet(hdwf, 0, 1)
-dwf.FDwfAnalogOutFunctionSet(hdwf, 0, DwfAnalogOutFunctionPulse)
-dwf.FDwfAnalogOutFrequencySet(hdwf, 0, c_double(frequency))
-dwf.FDwfAnalogOutAmplitudeSet(hdwf, 0, c_double(0.5))
-dwf.FDwfAnalogOutOffsetSet(hdwf, 0, c_double(0))
-dwf.FDwfAnalogOutSymmetrySet(hdwf, 0, c_double(duty))
-dwf.FDwfAnalogOutIdleSet(hdwf, 0, "DwfAnalogOutIdleOffset")
-
-dwf.FDwfAnalogOutRepeatSet(hdwf, 0, c_int(repeat))
-dwf.FDwfAnalogOutRepeatTriggerSet(hdwf, 0, c_int(repeat))
-dwf.FDwfAnalogOutRunSet(hdwf, 0, c_double(period))
-#dwf.FDwfAnalogOutWaitSet(hdwf, 0, c_double(0))
-
-#オシロスコープ
-hzAcq = c_double(100e5)  # 100MS/s
-nSamples = 200
-
-dwf.FDwfAnalogInReset(hdwf)
-
-dwf.FDwfAnalogInFrequencySet(hdwf, hzAcq)
-dwf.FDwfAnalogInBufferSizeSet(hdwf, c_int(nSamples))
-dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(0), c_bool(True))  # CH1
-
-# トリガ設定
-dwf.FDwfAnalogOutTriggerSourceSet(hdwf, 0, DwfTriggerSourceNone)
-dwf.FDwfAnalogInTriggerSourceSet(hdwf, DwfTriggerSourceAnalogOut)
-
-# 開始
-dwf.FDwfAnalogInConfigure(hdwf, c_bool(False), c_bool(True))
-dwf.FDwfAnalogOutConfigure(hdwf, 0, 1)
+    if hdwf.value == hdwfNone.value:
+        print("Failed to open device")
+        quit()
+    
+    dwf.FDwfDeviceAutoConfigureSet(hdwf, c_int(0))
+    
+    return dwf, hdwf
 
 
-# 測定完了まで待機
-sts = c_byte()
-while True:
-    dwf.FDwfAnalogInStatus(hdwf, c_int(1), byref(sts))
-    if sts.value == DwfStateDone:
-        break
-    time.sleep(0.01)
+def close_device(dwf, hdwf):
+    dwf.FDwfDeviceClose(hdwf)
+    print("Device closed")
 
-# データ取得
-rgBuffer = (c_double * nSamples)()
-dwf.FDwfAnalogInStatusData(hdwf, c_int(0), rgBuffer, len(rgBuffer))
 
-# 時間軸生成と表示
-t = np.linspace(0, nSamples / hzAcq.value, nSamples)
-v = np.fromiter(rgBuffer, dtype=np.float64)
+def DigitalIO_Switch(dwf, hdwf, mask, value):
+    dwf.FDwfDigitalIOOutputEnableSet(hdwf, c_int(mask))
+    dwf.FDwfDigitalIOOutputSet(hdwf, c_int(value))
+    dwf.FDwfDigitalIOConfigure(hdwf)
 
-plt.plot(t * 1e6, v)  # μs単位で表示
-plt.xlabel("Time [μs]")
-plt.ylabel("Voltage [V]")
-plt.title("Pulse Output + Oscilloscope Capture")
-plt.grid()
-plt.savefig("test.png")
 
-# 終了処理
-dwf.FDwfDeviceCloseAll()
+def AnalogIO_On(dwf, hdwf, isPositive=False, positive_v=0.0, isNegative=False, negative_v=0.0):
+    if isPositive:    
+        # enabel positive supply
+        dwf.FDwfAnalogIOChannelNodeSet(hdwf, 0, 0, c_double(1))
+        # set the voltage
+        dwf.FDwfAnalogIOChannelNodeSet(hdwf, 0, 1, c_double(positive_v))
+    else:
+        # disabel positive supply
+        dwf.FDwfAnalogIOChannelNodeSet(hdwf, 0, 0, c_double(0))
+
+    if isNegative:
+        # enable negative supply
+        dwf.FDwfAnalogIOChannelNodeSet(hdwf, 1, 0, c_double(1))
+        # set the voltage
+        dwf.FDwfAnalogIOChannelNodeSet(hdwf, 1, 1, c_double(negative_v))
+    else:
+        # disable negative supply
+        dwf.FDwfAnalogIOChannelNodeSet(hdwf, 1, 0, c_double(0))
+    
+    # master enable
+    dwf.FDwfAnalogIOEnableSet(hdwf, c_int(1))
+
+
+def AnalogIO_Off(dwf, hdwf):
+    # disable all analog IO channels
+    dwf.FDwfAnalogIOEnableSet(hdwf, c_int(0))
+
+
+def AnalogOut_pulse(dwf, hdwf, channel, period, width, amplitude, offset=0.0, count=1, wait=0.0, isPlot=False):
+    frequency = 1.0 / period
+    duty = width / period
+
+
+    dwf.FDwfAnalogOutNodeEnableSet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_int(1))
+    dwf.FDwfAnalogOutIdleSet(hdwf, c_int(channel), DwfAnalogOutIdleOffset)
+    dwf.FDwfAnalogOutNodeFunctionSet(hdwf, c_int(channel), AnalogOutNodeCarrier, funcPulse)
+    dwf.FDwfAnalogOutNodeFrequencySet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_double(frequency))
+    dwf.FDwfAnalogOutNodeAmplitudeSet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_double(amplitude))
+    dwf.FDwfAnalogOutNodeOffsetSet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_double(offset))
+
+    dwf.FDwfAnalogOutRunSet(hdwf, c_int(channel), c_double(period))
+    dwf.FDwfAnalogOutWaitSet(hdwf, c_int(channel), c_double(wait))
+    dwf.FDwfAnalogOutRepeatSet(hdwf, c_int(channel), c_int(count))
+
+    dwf.FDwfAnalogOutConfigure(hdwf, c_int(channel), c_int(1))
+
+
+def AnalogOut_pulse_setting(dwf, hdwf, channel, period, width, amplitude, offset=0.0):
+    frequency = 1.0 / period
+    duty = width / period
+
+    dwf.FDwfAnalogOutNodeEnableSet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_int(1))
+    dwf.FDwfAnalogOutIdleSet(hdwf, c_int(channel), DwfAnalogOutIdleOffset)
+    dwf.FDwfAnalogOutNodeFunctionSet(hdwf, c_int(channel), AnalogOutNodeCarrier, funcPulse)
+    dwf.FDwfAnalogOutNodeFrequencySet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_double(frequency))
+    dwf.FDwfAnalogOutNodeAmplitudeSet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_double(amplitude))
+    dwf.FDwfAnalogOutNodeOffsetSet(hdwf, c_int(channel), AnalogOutNodeCarrier, c_double(offset))
+    dwf.FDwfAnalogOutRunSet(hdwf, c_int(channel), c_double(period))
+    dwf.FDwfAnalogOutWaitSet(hdwf, c_int(channel), c_double(0.0))
+    dwf.FDwfAnalogOutRepeatSet(hdwf, c_int(channel), c_int(1))
+    
+    dwf.FDwfAnalogOutConfigure(hdwf, c_int(channel), c_int(0))
+
+
+if __name__ == "__main__":
+    # open the devices
+    dwf, hdwf = open_device()
+
+    # set the wg1 offset to -2.0V
+    dwf.FDwfAnalogOutNodeOffsetSet(hdwf, c_int(0), AnalogOutNodeCarrier, c_double(-2.0))
+
+    # READ
+    # set pin 1 to high
+    DigitalIO_Switch(dwf, hdwf, mask=0x02, value=0x02)
+
+    # SMUA applies the read voltage
+
+
+    # set pin 1 to low
+    DigitalIO_Switch(dwf, hdwf, mask=0x02, value=0x00)
+
+
+    # SET
+    # set AnalogIO to positive 5.0V
+    AnalogIO_On(dwf, hdwf, isPositive=True, positive_v=5.0)
+
+    # WG1 applies a pulse
+    AnalogOut_pulse(dwf, hdwf, channel=0, period=1e-6, width=5e-7, amplitude=1.0, offset=-2.0, count=1)
+    
+
+    # RESET
+    # set pin 0 to high
+    DigitalIO_Switch(dwf, hdwf, mask=0x01, value=0x01)
+
+    # Wg2 applies a pulse
+    AnalogOut_pulse(dwf, hdwf, channel=1, period=1e-6, width=5e-7, amplitude=-0.50, offset=0, count=1)
+
+    # set pin 0 to low
+    DigitalIO_Switch(dwf, hdwf, mask=0x01, value=0x00)
